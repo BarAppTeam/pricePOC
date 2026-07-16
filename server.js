@@ -83,16 +83,11 @@ const tools = [
 ];
 
 /**
- * Dynamic LLM Guardrail: Analyzes history to see if a price quote was actually provided.
- * If not, it generates a natural, custom refusal message.
+ * Stream-enabled Guardrail: Fast, token-by-token validation.
+ * Directly streams the refusal message to the client if the redirect is unauthorized.
+ * * @returns {Promise<boolean>} Resolves to true if allowed, false if rejected (and streamed)
  */
-async function verifyRedirectWithLLM(conversationHistory) {
-  // Fallback response if anything goes wrong
-  const defaultFallback = { 
-    allowed: false, 
-    refusalMessage: "בשמחה! לפני שאעביר אותך לוואטסאפ של הנציג, אשמח לדעת כמה אורחים מתוכננים ואיזה תפריט מעניין אתכם כדי שאוכל להכין לכם הצעת מחיר?" 
-  };
-
+async function streamGuardrailOrAllow(conversationHistory, res) {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -102,52 +97,87 @@ async function verifyRedirectWithLLM(conversationHistory) {
       },
       body: JSON.stringify({
         model: MODEL,
-        // Removed 'response_format' since the model doesn't support it
+        stream: true, // Stream the guardrail evaluation directly
         messages: [
+          ...conversationHistory,
           {
             role: "system",
-            content: `You are a strict guardrail checker. Analyze the conversation above.
+            content: `You are a strict redirect guardrail. Analyze the chat history.
             Has the assistant already calculated and provided a concrete price breakdown to the user?
             
-            Respond STRICTLY in JSON format. Do not include any markdown wrappers (like \`\`\`json) or extra conversational text. Return ONLY the raw JSON block.
+            Format your response exactly as follows:
+            If ALLOWED (price breakdown was already given):
+            Start your message with exactly "ALLOWED" and nothing else.
             
-            JSON Structure:
-            {
-              "allowed": true or false,
-              "refusalMessage": \`If allowed is false, write a polite, friendly, natural response in Hebrew explaining that we must calculate their custom price quote first, and ask them for the missing details (like guest count, menu preference, or location) to get started. If allowed is true, leave this empty.\`
-            }`
-          },
-          ...conversationHistory,
+            If NOT ALLOWED (no price quote given yet):
+            Start your message with exactly "REFUSED: " followed immediately by a polite, friendly, natural response in Hebrew explaining that we must calculate their custom price quote first, asking them for the missing details (like guest count, menu preference, or location) to get started.`
+          }
         ]
       })
     });
 
-    const data = await response.json();
-    
-    // Safely verify that choices exists and has at least one element
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
-      console.error("[GUARDRAIL ERROR] Unexpected API response format:", data);
-      return defaultFallback;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    let evaluatedType = null; // 'ALLOWED' or 'REFUSED'
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+      for (const line of lines) {
+        if (line.includes('[DONE]')) continue;
+        if (line.startsWith('data: ')) {
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const content = parsed.choices[0]?.delta?.content || "";
+            if (!content) continue;
+
+            buffer += content;
+
+            // Step 1: Detect the verdict as early as possible
+            if (!evaluatedType) {
+              if (buffer.startsWith("ALLOWED")) {
+                evaluatedType = "ALLOWED";
+                reader.cancel(); // Abort the fetch connection early to save tokens/time!
+                return true;
+              } else if (buffer.startsWith("REFUSED:")) {
+                evaluatedType = "REFUSED";
+                // Strip the trigger prefix from the buffer so we don't stream it to the user
+                const initialText = buffer.replace("REFUSED:", "").trim();
+                if (initialText) {
+                  res.write(`data: ${JSON.stringify({ content: initialText })}\n\n`);
+                }
+              } else if (buffer.length > 10) {
+                // Fallback catch if the model missed the prompt format but wrote a message anyway
+                evaluatedType = "REFUSED";
+                res.write(`data: ${JSON.stringify({ content: buffer })}\n\n`);
+              }
+            }
+            // Step 2: If we are in REFUSED state, stream subsequent tokens instantly
+            else if (evaluatedType === "REFUSED") {
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
+          } catch (e) {
+            console.error("[GUARDRAIL STREAM ERROR] Failed to parse guardrail stream chunk:", e);
+            // Ignore parse errors on stream boundary lines
+          }
+        }
+      }
     }
 
-    let contentString = data.choices[0].message.content.trim();
-    console.log({ contentString });
-    
-    // Quick sanitization to strip out markdown code fences if the LLM adds them anyway
-    if (contentString.startsWith("```")) {
-      contentString = contentString.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
-    }
-
-    const result = JSON.parse(contentString);
-    
-    return {
-      allowed: result.allowed ?? false,
-      refusalMessage: result.refusalMessage || defaultFallback.refusalMessage
-    };
+    console.log(`[GUARDRAIL] Evaluation completed. Result: ${evaluatedType || "UNKNOWN"}`);
+    return evaluatedType === "ALLOWED";
 
   } catch (error) {
-    console.error("[GUARDRAIL ERROR] Failed to verify redirect:", error);
-    return defaultFallback;
+    console.error("[GUARDRAIL ERROR] Error streaming guardrail evaluation:", error);
+    // Safe fallback: stream default rejection if API fails
+    res.write(`data: ${JSON.stringify({ content: "בשמחה! לפני שאעביר אותך לוואטסאפ של הנציג, אשמח לדעת כמה אורחים מתוכננים ואיזה תפריט מעניין אתכם כדי שאוכל להכין לכם הצעת מחיר?" })}\n\n`);
+    return false;
   }
 }
 
@@ -231,6 +261,7 @@ app.post('/api/chat', async (req, res) => {
 
     let isToolCall = false;
     let toolCallData = "";
+    let detectedToolName = ""; // משתנה חדש שיעקוב אחרי שם הכלי שהופעל
 
     // Parse the stream chunk by chunk
     while (true) {
@@ -252,13 +283,19 @@ app.post('/api/chat', async (req, res) => {
             if (delta?.tool_calls) {
               isToolCall = true;
               const toolCall = delta.tool_calls[0];
+
+              // שומרים את שם הכלי ברגע שהוא מזוהה בסטרים
+              if (toolCall.function?.name) {
+                detectedToolName = toolCall.function.name;
+              }
+
               if (toolCall.function?.arguments) {
                 toolCallData += toolCall.function.arguments;
               }
               continue;
             }
 
-            // Stream regular chat content back to client
+            // Stream regular chat content back to client ONLY if we aren't currently receiving tool arguments
             const content = delta?.content || "";
             if (content && !isToolCall) {
               res.write(`data: ${JSON.stringify({ content })}\n\n`);
@@ -273,10 +310,11 @@ app.post('/api/chat', async (req, res) => {
     // Process tool execution if triggered
     if (isToolCall && toolCallData) {
       const args = JSON.parse(toolCallData);
-      console.log(`[TOOL CALL] Parsed arguments:`, args);
+      console.log(`[TOOL CALL] Detected Tool: ${detectedToolName}. Parsed arguments:`, args);
 
       // Route 1: Calculate Pricing Tool
-      if (args.guestCount) {
+      // עכשיו הבדיקה מבוססת על שם הכלי שזוהה בסטרים ולא רק על הימצאות ארגומנט
+      if (detectedToolName === "calculatePrice" || args.guestCount) {
         const result = calculatePrice(args);
         const finalPriceMessage = `הנה התמחור שבניתי במיוחד עבורכם:\n\n` +
           `• תפריט: ${result.breakdown.menuType}\n` +
@@ -290,26 +328,21 @@ app.post('/api/chat', async (req, res) => {
       }
 
       // Route 2: WhatsApp Handover Tool
-      // Route 2: WhatsApp Handover Tool (Updated with LLM Guardrail)
-      else if (args.reason) {
-        console.log(`[GUARDRAIL] Verifying transfer request via LLM...`);
+      else if (detectedToolName === "redirectToWhatsApp" || args.reason) {
+        console.log(`[GUARDRAIL] Evaluating transfer request concurrently...`);
 
-        // 1. Run the LLM Guardrail Check on the current message history
-        const guard = await verifyRedirectWithLLM(messages);
+        // Pass the response stream directly to the evaluator
+        const allowed = await streamGuardrailOrAllow(messages, res);
 
-        if (!guard.allowed) {
-          console.log(`[GUARDRAIL] Transfer REJECTED by LLM. Reason: No quote given yet.`);
-
-          // Stream the dynamically generated refusal message back to the user
-          res.write(`data: ${JSON.stringify({ content: guard.refusalMessage })}\n\n`);
-        } else {
-          console.log(`[REDIRECT] Transfer APPROVED by LLM. Reason: ${args.reason}`);
-
+        if (allowed) {
+          console.log(`[REDIRECT] Transfer APPROVED by Guardrail.`);
           res.write(`data: ${JSON.stringify({
             action: "whatsapp_redirect",
             reason: args.reason,
             content: "מעולה, אני מעביר אותך כעת לשיחה ישירה בוואטסאפ עם השף שלנו!"
           })}\n\n`);
+        } else {
+          console.log(`[GUARDRAIL] Transfer REJECTED. Refusal stream completed.`);
         }
       }
     }

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>שף בקליק - עוזר דיגיטלי</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 h-screen flex flex-col justify-between">
+
+    <header
+        class="bg-emerald-600 text-white p-4 shadow-md text-center font-bold text-lg flex justify-between items-center">
+        <span>🤖 שף בקליק - עוזר חכם להצעות מחיר</span>
+        <button onclick="clearChat()" class="text-xs bg-emerald-700 px-2 py-1 rounded">שיחה חדשה</button>
+    </header>
+
+    <main id="chat-window" class="flex-1 overflow-y-auto p-4 space-y-4">
+        <div class="flex justify-start">
+            <div class="bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-gray-200">
+                היי! אני סוכן התמחור הדיגיטלי של "שף בקליק". 🎉 איזה סוג אירוע אתם מתכננים? (בשרי/חלבי, כמות אורחים
+                ומיקום יסייעו לי לתת לכם הצעה זריזה).
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-white p-3 border-t border-gray-200 flex items-center gap-2">
+        <input id="user-input" type="text" placeholder="כתבו הודעה..."
+            class="flex-1 border border-gray-300 rounded-full px-4 py-2 outline-none focus:border-emerald-500"
+            onkeypress="handleKeyPress(event)">
+        <button onclick="sendMessage()"
+            class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2 rounded-full">שלח</button>
+    </footer>
+
+    <script>
+        // הגדרת מספר הוואטסאפ של העסק (שנה למספר שלך בפורמט בינלאומי ללא פלוס, למשל 972501234567)
+        const WHATSAPP_NUMBER = "972501234567";
+
+        let chatHistory = [
+            {
+                role: "system",
+                content: `אתה סוכן מכירות ותמחור דיגיטלי קשוח ומדויק של קייטרינג "שף בקליק". 
+תפקידך הבלעדי הוא לתמחר אירועים סטנדרטיים או להעביר לקוחות מורכבים לנציג אנושי בוואטסאפ.
+
+--- גבולות הגזרה והחוקים שלך (בל יעבור): ---
+
+1. המנות והמחירים היחידים שקיימים אצלך במערכת:
+   - תפריט בשרי / אסאדו: 250 ש"ח למשתתף.
+   - תפריט חלבי / צמחוני: 150 ש"ח למשתתף.
+   - אין שום תפריט אחר (אין טבעוני מיוחד, אין ללא גלוטן, אין קינוחים מותאמים אישית, אין בר אקטיבי).
+
+2. חוק הפעלת ה-Tool לתמחור (calculatePrice):
+   - מותר לך להפעיל את calculatePrice רק אם יש לך: סוג תפריט ברור (בשרי או חלבי) וכמות אורחים מדויקת במספרים.
+   - אם חסר לך אחד מהם, בקש אותו בנימוס. אל תנחש!
+
+3. חוק העברה חובה לוואטסאפ (redirectToWhatsApp) - אתה חייב להעביר את הלקוח במידה ו:
+   - הלקוח מבקש תפריט שאינו בשרי או חלבי (למשל: "יש לכם תפריט ללא גלוטן?", "אני צריך פתרון לטבעוניים", "יש לכם סושי?").
+   - הלקוח אומר שהמחיר יקר לו או מבקש הנחה כלשהי (למשל: "אפשר ב-200 ש"ח?", "זה יקר לי", "יש הנחה לכמות?").
+   - הלקוח מבקש שינוי לוגיסטי חריג (למשל: "האירוע באילת", "אפשר לעשות את זה בטבע בחושך?", "אפשר הגשה אישית ולא בופה?").
+   - הלקוח מביע עניין להתקדם לסגירה ותשלום מקדמה (למשל: "איך סוגרים?", "אני רוצה לשריין").
+
+--- אופן הפעולה שלך: ---
+בכל פעם שאחד מהתנאים בסעיף 3 מתקיים, אל תנסה לפתור את הבעיה, אל תציע אלטרנטיבות ואל תתמקח. 
+הפעל מיד את הכלי 'redirectToWhatsApp' עם הסיבה המדויקת. פשוט ומהיר.`
+            }
+        ];
+
+        const chatWindow = document.getElementById('chat-window');
+        const userInput = document.getElementById('user-input');
+
+        function appendMessage(sender, text) {
+            const wrapper = document.createElement('div');
+            wrapper.className = sender === 'user' ? 'flex justify-end' : 'flex justify-start';
+
+            const bubble = document.createElement('div');
+            bubble.className = sender === 'user'
+                ? 'bg-emerald-500 text-white rounded-lg p-3 max-w-[80%] shadow-sm animate-fade-in'
+                : 'bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-gray-200 animate-fade-in';
+
+            bubble.innerText = text;
+            wrapper.appendChild(bubble);
+            chatWindow.appendChild(wrapper);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        // פונקציה שמייצרת כפתור וואטסאפ דינמי בתוך הצ'אט
+        function appendWhatsAppButton(reason) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex justify-start my-2';
+
+            const btn = document.createElement('a');
+            btn.className = 'bg-green-500 hover:bg-green-600 text-white font-bold px-6 py-3 rounded-lg shadow-md flex items-center gap-2 transition-all transform hover:scale-105';
+
+            // יצירת טקסט מוכן מראש לוואטסאפ
+            const messageText = `היי, הגעתי מהאתר לגבי קייטרינג לאירוע. נשמח לקבל הצעה מותאמת אישית (סיבה: ${reason}).`;
+            btn.href = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(messageText)}`;
+            btn.target = "_blank";
+
+            btn.innerHTML = `
+            <svg class="w-6 h-6 fill-current" viewBox="0 0 24 24">
+                <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.003 5.324 5.328 0 11.859 0c3.161.001 6.136 1.233 8.375 3.474 2.238 2.24 3.467 5.218 3.465 8.379-.004 6.536-5.329 11.86-11.859 11.86-.001 0-1.99-.001-1.99-.001-.001 0-.001 0 0 0zm0 0c1.992 0 3.842-.519 5.46-1.425l.392-.233 4.057 1.063-1.085-3.953.255-.406c.995-1.585 1.52-3.42 1.517-5.305C21.649 6.126 17.26 2.112 11.86 2.112c-5.4 0-9.789 4.013-9.789 8.941a8.819 8.819 0 0 0 1.341 4.675l.281.447L2.612 20.25l4.135-1.085.421.25a9.784 9.784 0 0 0 4.691 1.21zm0 0z"/>
+            </svg>
+            המשך שיחה בוואטסאפ
+        `;
+
+            wrapper.appendChild(btn);
+            chatWindow.appendChild(wrapper);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            appendMessage('user', text);
+            userInput.value = '';
+            chatHistory.push({ role: "user", content: text });
+
+            // יצירת בועה ריקה עבור תגובת הבוט שתתמלא בהדרגה
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-gray-200 whitespace-pre-wrap';
+            wrapper.appendChild(bubble);
+            chatWindow.appendChild(wrapper);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: chatHistory })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let aiReplyText = "";
+                let pendingRedirectReason = null;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    // מפרקים את הבלוקים שהגיעו מה-SSE לשורות בודדות
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const rawData = line.slice(6).trim();
+                                if (!rawData) continue;
+
+                                const data = JSON.parse(rawData);
+
+                                // 1. מקרה של הפניה לוואטסאפ
+                                if (data.action === "whatsapp_redirect") {
+                                    aiReplyText = data.content;
+                                    bubble.innerText = aiReplyText;
+                                    pendingRedirectReason = data.reason || "פנייה כללית";
+                                }
+                                // 2. מקרה של טקסט רגיל (או תמחור מעוצב)
+                                else if (data.content) {
+                                    aiReplyText += data.content;
+                                    bubble.innerText = aiReplyText;
+                                }
+
+                                chatWindow.scrollTop = chatWindow.scrollHeight;
+                            } catch (e) {
+                                // מתעלמים משורות חלקיות או שגיאות פארסינג קלות בזמן הזרמה
+                            }
+                        }
+                    }
+                }
+
+                // שמירת התוצאה הסופית בזיכרון השיחה
+                chatHistory.push({ role: "assistant", content: aiReplyText });
+
+                // אם זוהתה דרישת מעבר לוואטסאפ - מציגים את הכפתור הירוק מייד מתחת להודעה!
+                if (pendingRedirectReason) {
+                    appendWhatsAppButton(pendingRedirectReason);
+                }
+
+            } catch (err) {
+                bubble.innerText = 'שגיאה בחיבור לשרת.';
+                console.error(err);
+            }
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') sendMessage();
+        }
+
+        function clearChat() {
+            location.reload();
+        }
+    </script>
+</body>
+
+</html>

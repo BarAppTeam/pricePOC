@@ -37,34 +37,7 @@
         // הגדרת מספר הוואטסאפ של העסק (שנה למספר שלך בפורמט בינלאומי ללא פלוס, למשל 972501234567)
         const WHATSAPP_NUMBER = "972501234567";
 
-        let chatHistory = [
-            {
-                role: "system",
-                content: `אתה סוכן מכירות ותמחור דיגיטלי קשוח ומדויק של קייטרינג "שף בקליק". 
-תפקידך הבלעדי הוא לתמחר אירועים סטנדרטיים או להעביר לקוחות מורכבים לנציג אנושי בוואטסאפ.
-
---- גבולות הגזרה והחוקים שלך (בל יעבור): ---
-
-1. המנות והמחירים היחידים שקיימים אצלך במערכת:
-   - תפריט בשרי / אסאדו: 250 ש"ח למשתתף.
-   - תפריט חלבי / צמחוני: 150 ש"ח למשתתף.
-   - אין שום תפריט אחר (אין טבעוני מיוחד, אין ללא גלוטן, אין קינוחים מותאמים אישית, אין בר אקטיבי).
-
-2. חוק הפעלת ה-Tool לתמחור (calculatePrice):
-   - מותר לך להפעיל את calculatePrice רק אם יש לך: סוג תפריט ברור (בשרי או חלבי) וכמות אורחים מדויקת במספרים.
-   - אם חסר לך אחד מהם, בקש אותו בנימוס. אל תנחש!
-
-3. חוק העברה חובה לוואטסאפ (redirectToWhatsApp) - אתה חייב להעביר את הלקוח במידה ו:
-   - הלקוח מבקש תפריט שאינו בשרי או חלבי (למשל: "יש לכם תפריט ללא גלוטן?", "אני צריך פתרון לטבעוניים", "יש לכם סושי?").
-   - הלקוח אומר שהמחיר יקר לו או מבקש הנחה כלשהי (למשל: "אפשר ב-200 ש"ח?", "זה יקר לי", "יש הנחה לכמות?").
-   - הלקוח מבקש שינוי לוגיסטי חריג (למשל: "האירוע באילת", "אפשר לעשות את זה בטבע בחושך?", "אפשר הגשה אישית ולא בופה?").
-   - הלקוח מביע עניין להתקדם לסגירה ותשלום מקדמה (למשל: "איך סוגרים?", "אני רוצה לשריין").
-
---- אופן הפעולה שלך: ---
-בכל פעם שאחד מהתנאים בסעיף 3 מתקיים, אל תנסה לפתור את הבעיה, אל תציע אלטרנטיבות ואל תתמקח. 
-הפעל מיד את הכלי 'redirectToWhatsApp' עם הסיבה המדויקת. פשוט ומהיר.`
-            }
-        ];
+        const chatHistory = [];
 
         const chatWindow = document.getElementById('chat-window');
         const userInput = document.getElementById('user-input');
@@ -117,13 +90,27 @@
             userInput.value = '';
             chatHistory.push({ role: "user", content: text });
 
-            // יצירת בועה ריקה עבור תגובת הבוט שתתמלא בהדרגה
+            // יצירת בועה ראשונית קומפקטית וממוקדת עם אנימציית טעינה (Dots)
             const wrapper = document.createElement('div');
             wrapper.className = 'flex justify-start';
             const bubble = document.createElement('div');
-            bubble.className = 'bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-gray-200 whitespace-pre-wrap';
+            
+            // שימוש ב-w-32 נותן רוחב קבוע, קטן ושלם לטעינה מבלי להימתח לרוחב המלא
+            bubble.className = 'bg-white text-gray-800 rounded-lg p-3 w-32 shadow-sm border border-gray-200';
+            
+            // תבנית טעינה זמנית מיושרת וממורכזת
+            bubble.innerHTML = `
+                <div class="flex items-center gap-1 text-gray-500 justify-center">
+                    <span class="animate-bounce" style="animation-delay: 0s">●</span>
+                    <span class="animate-bounce" style="animation-delay: 0.15s">●</span>
+                    <span class="animate-bounce" style="animation-delay: 0.3s">●</span>
+                    <span class="mr-1 text-xs font-semibold text-gray-400 select-none">חושב...</span>
+                </div>
+            `;
+            
             wrapper.appendChild(bubble);
             chatWindow.appendChild(wrapper);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
 
             try {
                 const response = await fetch('/api/chat', {
@@ -132,10 +119,16 @@
                     body: JSON.stringify({ messages: chatHistory })
                 });
 
+                // בודק אם הבקשה חזרה בהצלחה - מונע תקיעת ממשק במקרה של שגיאת 500/404
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let aiReplyText = "";
                 let pendingRedirectReason = null;
+                let isFirstChunk = true; // משתנה עזר לניקוי הטעינה
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -152,6 +145,13 @@
                                 if (!rawData) continue;
 
                                 const data = JSON.parse(rawData);
+
+                                // ברגע שהתקבלו נתונים ראשוניים מהמודל - מנקים את האנימציה ומסירים את הגבלת הרוחב הקבוע w-32
+                                if (isFirstChunk && (data.content || data.action)) {
+                                    bubble.innerHTML = '';
+                                    bubble.className = 'bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-gray-200 whitespace-pre-wrap';
+                                    isFirstChunk = false;
+                                }
 
                                 // 1. מקרה של הפניה לוואטסאפ
                                 if (data.action === "whatsapp_redirect") {
@@ -182,8 +182,10 @@
                 }
 
             } catch (err) {
-                bubble.innerText = 'שגיאה בחיבור לשרת.';
-                console.error(err);
+                console.error("שגיאה בתקשורת עם השרת:", err);
+                // במקרה של שגיאה, מחזירים עיצוב בועה סטנדרטי ומציגים שגיאה
+                bubble.className = 'bg-white text-gray-800 rounded-lg p-3 max-w-[80%] shadow-sm border border-red-200 text-red-500';
+                bubble.innerText = '⚠️ שגיאה בחיבור לשרת. אנא נסו שוב.';
             }
         }
 

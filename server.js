@@ -12,7 +12,7 @@ app.use(express.static(__dirname));
 
 // Configuration & Environment Validation
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
-const MODEL = "tencent/hy3:free";
+const MODEL = process.env.LLM_MODEL || "tencent/hy3:free";
 
 if (!OPENROUTER_KEY) {
   console.error("❌ Environment Error: OPENROUTER_API_KEY is not defined.");
@@ -284,6 +284,11 @@ app.post('/api/chat', async (req, res) => {
       })
     });
 
+    if(!response.ok) {
+      const errorMessage = await response.text();
+      throw new Error(`OpenRouter API responded with status ${response.status}}: ${errorMessage}`);
+    }
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
 
@@ -379,7 +384,7 @@ app.post('/api/chat', async (req, res) => {
 
   } catch (error) {
     console.error("[FATAL ERROR]", error);
-    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ content: error.message })}\n\n`);
     res.end();
   }
 });

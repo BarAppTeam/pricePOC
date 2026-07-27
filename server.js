@@ -20,12 +20,12 @@ if (!OPENROUTER_KEY) {
 }
 
 // Global configurations for API calls
-const OPENROUTER_HEADERS = {
+const getOpenRouterHeaders = (referer) => ({
   "Authorization": `Bearer ${OPENROUTER_KEY}`,
   "Content-Type": "application/json",
-  "HTTP-Referer": "http://localhost:3000",
+  "HTTP-Referer": referer || "",
   "X-Title": "Catering Agent Stream"
-};
+});
 
 const SYSTEM_PROMPT = {
   role: "system",
@@ -115,14 +115,11 @@ const tools = [
  * Directly streams the refusal message to the client if the redirect is unauthorized.
  * * @returns {Promise<boolean>} Resolves to true if allowed, false if rejected (and streamed)
  */
-async function streamGuardrailOrAllow(conversationHistory, res) {
+async function streamGuardrailOrAllow(conversationHistory, req, res) {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENROUTER_KEY}`,
-        "Content-Type": "application/json"
-      },
+      headers: getOpenRouterHeaders(req.headers.referer),
       body: JSON.stringify({
         model: MODEL,
         stream: true, // Stream the guardrail evaluation directly
@@ -222,7 +219,7 @@ async function streamAIResponse(messages, res, injectSystemPrompt = null) {
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { "Authorization": `Bearer ${OPENROUTER_KEY}`, "Content-Type": "application/json" },
+      headers: getOpenRouterHeaders(),
       body: JSON.stringify(payload)
     });
 
@@ -274,7 +271,7 @@ app.post('/api/chat', async (req, res) => {
     // Call OpenRouter with active tools enabled
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: OPENROUTER_HEADERS,
+      headers: getOpenRouterHeaders(req.headers.referer),
       body: JSON.stringify({
         model: MODEL,
         messages: [SYSTEM_PROMPT, ...messages],
@@ -284,7 +281,7 @@ app.post('/api/chat', async (req, res) => {
       })
     });
 
-    if(!response.ok) {
+    if (!response.ok) {
       const errorMessage = await response.text();
       throw new Error(`OpenRouter API responded with status ${response.status}}: ${errorMessage}`);
     }
@@ -365,7 +362,7 @@ app.post('/api/chat', async (req, res) => {
         console.log(`[GUARDRAIL] Evaluating transfer request concurrently...`);
 
         // Pass the response stream directly to the evaluator
-        const allowed = await streamGuardrailOrAllow(messages, res);
+        const allowed = await streamGuardrailOrAllow(messages, req, res);
 
         if (allowed) {
           console.log(`[REDIRECT] Transfer APPROVED by Guardrail.`);
